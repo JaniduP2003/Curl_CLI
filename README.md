@@ -17,6 +17,11 @@ Interactive terminal UI for crafting HTTP requests (like Postman, but in your te
 go build
 ./Curl_CLI
 ```
+## Build and Run if you are in Linux 
+```sh
+go build -o postman-cli main.go
+./postman-cli 
+```
 
 ## Keys
 - Enter: Continue/Confirm
