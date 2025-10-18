@@ -19,6 +19,7 @@ METHOD="${1:-GET}"
 URL="${2}"
 HEADERS="${3}"
 BODY="${4}"
+BODY_TYPE=$(echo "${5}" | tr 'A-Z' 'a-z') # "raw", "none", or empty
 
 # Validate inputs
 if [ -z "$URL" ]; then
@@ -34,33 +35,93 @@ RESPONSE_CODE=$(mktemp)
 # Cleanup temporary files on exit
 trap "rm -f $RESPONSE_HEADERS $RESPONSE_BODY $RESPONSE_CODE" EXIT
 
-# Build curl command with options
-CURL_CMD="curl -s -w '%{http_code}' -o $RESPONSE_BODY -D $RESPONSE_HEADERS"
-
-# Add method
-CURL_CMD="$CURL_CMD -X $METHOD"
-
-# Add headers if provided
+# Detect/normalize Content-Type
+has_content_type=false
+ct_value=""
 if [ -n "$HEADERS" ]; then
-    # Split headers by newline and add each as -H option
     while IFS= read -r header; do
-        if [ -n "$header" ]; then
-            CURL_CMD="$CURL_CMD -H \"$header\""
+        # trim leading spaces for matching
+        trimmed=$(echo "$header" | sed -E 's/^\s+//')
+        if [[ -n "$trimmed" && "$trimmed" =~ ^[Cc][Oo][Nn][Tt][Ee][Nn][Tt]-[Tt][Yy][Pp][Ee]: ]]; then
+            has_content_type=true
+            ct_value=$(echo "$trimmed" | cut -d: -f2- | tr -d '\r' | xargs)
         fi
     done <<< "$HEADERS"
 fi
 
-# Add body for POST/PUT requests
-if [ -n "$BODY" ] && { [ "$METHOD" = "POST" ] || [ "$METHOD" = "PUT" ]; }; then
-    CURL_CMD="$CURL_CMD -d '$BODY'"
+# Decide how to send the body
+send_body=false
+send_raw=false
+if { [ "$METHOD" = "POST" ] || [ "$METHOD" = "PUT" ]; } && [ -n "$BODY" ]; then
+    case "$BODY_TYPE" in
+        raw)
+            send_body=true
+            send_raw=true
+            # For raw, default to JSON if not specified
+            if ! $has_content_type; then
+                HEADERS=$(printf "%s\n%s" "$HEADERS" "Content-Type: application/json")
+                has_content_type=true
+                ct_value="application/json"
+            fi
+            ;;
+        none)
+            send_body=false
+            ;;
+        *)
+            # Fallback heuristics when type not specified
+            send_body=true
+            if $has_content_type; then
+                ct_lower=$(echo "$ct_value" | tr 'A-Z' 'a-z')
+                if [[ "$ct_lower" != application/x-www-form-urlencoded* ]]; then
+                    send_raw=true
+                fi
+            else
+                # If body looks like JSON, set CT and use raw
+                if [[ "$BODY" =~ ^[[:space:]]*\{ ]] || [[ "$BODY" =~ ^[[:space:]]*\[ ]]; then
+                    HEADERS=$(printf "%s\n%s" "$HEADERS" "Content-Type: application/json")
+                    has_content_type=true
+                    ct_value="application/json"
+                    send_raw=true
+                fi
+            fi
+            ;;
+    esac
+fi
+
+# Build curl command using array to avoid eval
+CURL_ARGS=(
+    -s
+    -w '%{http_code}'
+    -o "$RESPONSE_BODY"
+    -D "$RESPONSE_HEADERS"
+    -X "$METHOD"
+)
+
+# Add headers
+if [ -n "$HEADERS" ]; then
+    while IFS= read -r header; do
+        if [ -n "$header" ]; then
+            CURL_ARGS+=( -H "$header" )
+        fi
+    done <<< "$HEADERS"
+fi
+
+# Add body
+if $send_body; then
+    if $send_raw; then
+        # Use --data-raw to send the body exactly without URL-encoding
+        CURL_ARGS+=( --data-raw "$BODY" )
+    else
+        CURL_ARGS+=( --data "$BODY" )
+    fi
 fi
 
 # Add URL
-CURL_CMD="$CURL_CMD \"$URL\""
+CURL_ARGS+=( "$URL" )
 
-# Execute curl command and capture status code
-HTTP_CODE=$(eval $CURL_CMD)
-echo "$HTTP_CODE" > $RESPONSE_CODE
+# Execute curl and capture status
+HTTP_CODE=$(curl "${CURL_ARGS[@]}")
+echo "$HTTP_CODE" > "$RESPONSE_CODE"
 
 # Read the response code
 STATUS_CODE=$(cat $RESPONSE_CODE)

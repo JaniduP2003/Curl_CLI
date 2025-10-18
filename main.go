@@ -39,6 +39,7 @@ const (
 	introScreen screen = iota
 	urlScreen screen = iota
 	methodScreen
+	bodyTypeScreen
 	headersScreen
 	bodyScreen
 	confirmScreen
@@ -77,6 +78,7 @@ type model struct {
 	// Input components
 	urlInput     textinput.Model
 	methodList   list.Model
+	bodyTypeList list.Model
 	headersInput textarea.Model
 	bodyInput    textarea.Model
 
@@ -90,6 +92,7 @@ type model struct {
 	method   string
 	headers  string
 	body     string
+	bodyType string // "raw" or "none"
 	response string
 
 	// UI state
@@ -127,6 +130,19 @@ func initialModel() model {
 	// Method selection list
 	delegate := list.NewDefaultDelegate()
 	methodList := list.New(methods, delegate, 0, 0)
+	// Body type list (Raw or None)
+	bodyTypes := []list.Item{
+		item{title: "Raw", desc: "Send raw request body (e.g., JSON)"},
+		item{title: "None", desc: "No request body"},
+	}
+	bodyTypeList := list.New(bodyTypes, list.NewDefaultDelegate(), 0, 0)
+	bodyTypeList.Title = "Body Type"
+	bodyTypeList.SetShowStatusBar(false)
+	bodyTypeList.SetFilteringEnabled(false)
+	bodyTypeList.Styles.Title = lipgloss.NewStyle().
+		MarginLeft(2).
+		Bold(true).
+		Foreground(lipgloss.Color("62"))
 	methodList.Title = "Select HTTP Method"
 	methodList.SetShowStatusBar(false)
 	methodList.SetFilteringEnabled(false)
@@ -140,12 +156,17 @@ func initialModel() model {
 	headersInput.Placeholder = "Content-Type: application/json\nAuthorization: Bearer token"
 	headersInput.SetWidth(60)
 	headersInput.SetHeight(5)
+	// Hide line numbers for cleaner look
+	headersInput.ShowLineNumbers = false
 
 	// Body input (textarea for JSON)
 	bodyInput := textarea.New()
-	bodyInput.Placeholder = `{"key": "value"}`
+	// Leave placeholder empty; we'll only show body when Raw is selected
+	bodyInput.Placeholder = ""
 	bodyInput.SetWidth(60)
 	bodyInput.SetHeight(10)
+	// Hide line numbers in body editor
+	bodyInput.ShowLineNumbers = false
 
 	// Loading spinner
 	s := spinner.New()
@@ -162,6 +183,7 @@ func initialModel() model {
 		currentScreen: introScreen,
 		urlInput:      ti,
 		methodList:    methodList,
+	bodyTypeList:  bodyTypeList,
 		headersInput:  headersInput,
 		bodyInput:     bodyInput,
 		spinner:       s,
@@ -251,6 +273,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Apply responsive sizing to inputs and lists
 		m.applyLayoutSizes()
 		m.methodList.SetSize(maxInt(20, msg.Width-4), maxInt(6, msg.Height-8))
+	m.bodyTypeList.SetSize(maxInt(20, msg.Width-4), maxInt(6, msg.Height-8))
 		// Reset animation progress to fit new size if intro not done
 		if m.currentScreen == introScreen && !m.introDone {
 			m.animTopProgress = minInt(m.animTopProgress, maxInt(0, m.width-(m.animOffset*2)))
@@ -354,6 +377,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case methodScreen:
 		m.methodList, cmd = m.methodList.Update(msg)
 		cmds = append(cmds, cmd)
+	case bodyTypeScreen:
+		m.bodyTypeList, cmd = m.bodyTypeList.Update(msg)
+		cmds = append(cmds, cmd)
 	case headersScreen:
 		m.headersInput, cmd = m.headersInput.Update(msg)
 		cmds = append(cmds, cmd)
@@ -396,24 +422,61 @@ func (m *model) handleEnter() (tea.Model, tea.Cmd) {
 		if selectedItem, ok := m.methodList.SelectedItem().(item); ok {
 			m.method = selectedItem.title
 		}
-		// Skip headers for GET/DELETE, go to body for POST/PUT
+		// For POST/PUT ask for body type next; for GET/DELETE jump to confirm
 		if m.method == "POST" || m.method == "PUT" {
-			m.currentScreen = headersScreen
-			m.headersInput.Focus()
+			m.currentScreen = bodyTypeScreen
 		} else {
 			m.currentScreen = confirmScreen
 		}
 		return m, nil
 
+	case bodyTypeScreen:
+		// Save body type
+		if bt, ok := m.bodyTypeList.SelectedItem().(item); ok {
+			switch strings.ToLower(bt.title) {
+			case "raw":
+				m.bodyType = "raw"
+				// Jump directly to body entry; headers are optional and auto-inferred
+				m.currentScreen = bodyScreen
+				m.bodyInput.Focus()
+				// clear any example placeholder for raw input to avoid confusion
+				m.bodyInput.SetValue("")
+				m.bodyInput.Placeholder = ""
+			default:
+				// none: skip headers/body and go to confirm
+				m.bodyType = "none"
+				m.headers = ""
+				m.body = ""
+				m.currentScreen = confirmScreen
+			}
+		}
+		return m, nil
+
 	case headersScreen:
-		// Save headers and move to body input
+		// Save headers; for bodyType none we go to confirm
 		m.headers = m.headersInput.Value()
-		m.currentScreen = bodyScreen
-		m.bodyInput.Focus()
+		m.currentScreen = confirmScreen
 		return m, nil
 
 	case bodyScreen:
-		// Save body and move to confirm
+		// Save body and send immediately (skip confirm) when Raw
+		if m.bodyType == "raw" && (m.method == "POST" || m.method == "PUT") {
+			if strings.TrimSpace(m.bodyInput.Value()) == "" {
+				// stay on this screen until user enters a body
+				return m, nil
+			}
+			m.body = m.bodyInput.Value()
+			// Execute request now
+			m.currentScreen = loadingScreen
+			m.canceled = false
+			ctx, cancel := context.WithCancel(context.Background())
+			m.cancel = cancel
+			return m, tea.Batch(
+				m.spinner.Tick,
+				m.executeRequest(ctx),
+			)
+		}
+		// Fallback: for other types, go to confirm
 		m.body = m.bodyInput.Value()
 		m.currentScreen = confirmScreen
 		return m, nil
@@ -489,7 +552,12 @@ func (m *model) executeRequest(ctx context.Context) tea.Cmd {
 		// Add body if provided
 		if m.body != "" {
 			args = append(args, m.body)
+		} else {
+			args = append(args, "")
 		}
+
+		// Add body type (raw/none or empty)
+		args = append(args, m.bodyType)
 
 		// Execute bash script with cancelable context
 		cmd := exec.CommandContext(ctx, "./request.sh", args...)
@@ -597,6 +665,11 @@ func (m model) View() string {
 		s += m.methodList.View() + "\n"
 		s += helpStyle("↑/↓ to navigate • Enter to select • Esc to go back")
 
+	case bodyTypeScreen:
+		s = titleStyle.Render("🧩 Select Body Type") + "\n\n"
+		s += m.bodyTypeList.View() + "\n"
+		s += helpStyle("↑/↓ to navigate • Enter to select • Esc to go back")
+
 	case headersScreen:
 		s = titleStyle.Render("📋 Enter Headers (Optional)") + "\n\n"
 		s += "One header per line (e.g., Content-Type: application/json)\n\n"
@@ -606,7 +679,11 @@ func (m model) View() string {
 	case bodyScreen:
 		s = titleStyle.Render("📝 Enter Request Body") + "\n\n"
 		s += m.bodyInput.View() + "\n\n"
-		s += helpStyle("Enter to continue • Esc to go back")
+		if m.bodyType == "raw" {
+			s += helpStyle("Enter to send • Esc to go back")
+		} else {
+			s += helpStyle("Enter to continue • Esc to go back")
+		}
 
 	case confirmScreen:
 		s = titleStyle.Render("🚀 Ready to Send") + "\n\n"
@@ -785,7 +862,7 @@ func prepareIntroArt(innerW int) []string {
 	return lines
 }
 
-func visibleLen(s string) int { return len([]rune(s)) }
+// func visibleLen(s string) int { return len([]rune(s)) }
 
 func padOrTrim(s string, w int) string {
 	r := []rune(s)
