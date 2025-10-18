@@ -1,0 +1,189 @@
+curl -i -X POST http://localhost:8080/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "drkapila@example.com",
+    "password": "Jsniu2003OOo!!",
+    "username": "Dr.kapila"
+  }'
+
+  we get this 
+
+  HTTP/1.1 400 Bad Request
+Content-Type: application/json; charset=utf-8
+Date: Sat, 18 Oct 2025 14:09:24 GMT
+Server: Kestrel
+Transfer-Encoding: chunked
+
+{"error":"User with this email already exists."}%                                                                                                                                                                                             Curl_CLI   git:(main)  
+
+
+   Curl_CLI   git:(main) -       echo "   janidu " | sed -E 's/^\s+//'
+output is :janidu (no traling space )
+
+-----------------
+
+ if [[ -n "$trimmed" && "$trimmed" =~ ^[Cc][Oo][Nn][Tt][Ee][Nn][Tt]-[Tt][Yy][Pp][Ee]: ]]; then
+            has_content_type=true
+            ct_value=$(echo "$trimmed" | cut -d: -f2- | tr -d '\r' | xargs)
+        fi
+
+-n "$trimmed" THIS CHACKS IF THE TRIMMED VEARIABLE IS EMEPTY OR NOT IF ITS NOT EMEPTY THIS WILL 
+AND it matches the word “Content-Type:”, no matter if the letters are uppercase or lowercase.
+
+THEN IT MAKES THE FULSE BEFORE TRUE 
+
+cut -d: -f2- whyy:::
+    this separetes after this :
+    Example: "Content-Type: application/json" → " application/json"
+
+tr -d '\r' why ::: 
+    Different operating systems use different combinations for “end of line”:
+
+    | System            | End of line character(s)             | Example            |
+    | ----------------- | ------------------------------------ | ------------------ |
+    | **Linux / macOS** | `\n` (line feed only)                | `"Hello\nWorld"`   |
+    | **Windows**       | `\r\n` (carriage return + line feed) | `"Hello\r\nWorld"` |
+    
+        So Windows puts two characters at the end of each line instead of one. SO IT REMOVES /r
+ 
+ ---------------------------------------
+$haders
+
+    HTTP/1.1 200 OK
+    Date: Sat, 18 Oct 2025
+    Content-Type: application/json
+    Server: nginx
+
+    to :::
+    has_content_type=true
+    ct_value=application/json
+
+--------------------------------------
+HOW THE ARGUMENTS ARE PASSED IN .SH
+
+💬 Example
+
+./postman-cli.sh POST https://api.test.com/users "" '{"name":"Janidu"}' raw
+
+The script does this:
+
+    Sees POST → okay to send body ✅
+    Type is raw → send as-is ✅
+    No Content-Type header? → add Content-Type: application/json automatically 🧠
+    Body: {"name":"Janidu"} → goes straight into curl’s --data-raw.
+
+the code ;::
+
+                                                # Decide how to send the body
+                                                send_body=false
+                                                send_raw=false
+                                                if { [ "$METHOD" = "POST" ] || [ "$METHOD" = "PUT" ]; } && [ -n "$BODY" ]; then
+                                                    case "$BODY_TYPE" in
+                                                        raw)
+                                                            send_body=true
+                                                            send_raw=true
+                                                            # For raw, default to JSON if not specified
+                                                            if ! $has_content_type; then
+                                                                HEADERS=$(printf "%s\n%s" "$HEADERS" "Content-Type: application/json")
+                                                                has_content_type=true
+                                                                ct_value="application/json"
+                                                            fi
+                                                            ;;
+                                                        none)
+                                                            send_body=false
+                                                            ;;
+                                                        *)
+                                                            # Fallback heuristics when type not specified
+                                                            send_body=true
+                                                            if $has_content_type; then
+                                                                ct_lower=$(echo "$ct_value" | tr 'A-Z' 'a-z')
+                                                                if [[ "$ct_lower" != application/x-www-form-urlencoded* ]]; then
+                                                                    send_raw=true
+                                                                fi
+                                                            else
+                                                                # If body looks like JSON, set CT and use raw
+                                                                if [[ "$BODY" =~ ^[[:space:]]*\{ ]] || [[ "$BODY" =~ ^[[:space:]]*\[ ]]; then
+                                                                    HEADERS=$(printf "%s\n%s" "$HEADERS" "Content-Type: application/json")
+                                                                    has_content_type=true
+                                                                    ct_value="application/json"
+                                                                    send_raw=true
+                                                                fi
+                                                            fi
+                                                            ;;
+                                                    esac
+                                                fi 
+
+while IFS= read -r header; do
+
+    Loops through each line in $HEADERS and assigns it to the variable header.
+    IFS= → prevents Bash from splitting the line by spaces (we want the whole line).
+    -r → stops Bash from treating backslashes \ as special characters.
+    So each iteration of the loop handles one header line.
+
+
+ITS LIKE ASSEMBLY ITS BEAING CONNECTED AND FINALIZED
+
+    ~curl -s -X POST -H "Content-Type: application/json" --data-raw '{"name":"Janidu"}' http://localhost:8080/api/auth/register
+
+# Add URL
+CURL_ARGS+=( "$URL" )
+
+# Execute curl and capture status
+HTTP_CODE=$(curl "${CURL_ARGS[@]}")
+echo "$HTTP_CODE" > "$RESPONSE_CODE"
+
+# Read the response code
+STATUS_CODE=$(cat $RESPONSE_CODE)
+
+    If CURL_ARGS contains:
+        -s -w '%{http_code}' -o /tmp/body -D /tmp/headers -X POST -H "Content-Type: application/json" --data-raw '{"name":"Janidu"}' http://localhost:8080/api/auth/register
+
+-w '%{http_code}' → prints only the HTTP status code at the end
+So HTTP_CODE now contains something like:201
+
+    ~echo "$HTTP_CODE" > "$RESPONSE_CODE"
+
+            Writes that HTTP status code into the temp file $RESPONSE_CODE.
+            Example: /tmp/tmp.abc123 now contains:201
+
+STATUS_CODE=$(cat $RESPONSE_CODE)
+    Reads the content of the temp file into a variable STATUS_CODE.
+
+this code:::
+
+                                                    # Check if response body is JSON and format it
+                                                    if command -v jq &> /dev/null; then
+                                                        # Use jq to format JSON if available
+                                                        if jq -e . "$RESPONSE_BODY" &> /dev/null; then
+                                                            cat "$RESPONSE_BODY" | jq -C '.'
+                                                        else
+                                                            # Not valid JSON, display as-is
+                                                            cat "$RESPONSE_BODY"
+                                                        fi
+                                                    else
+                                                        # jq not available, try basic JSON detection and indentation
+                                                        if grep -q "^{" "$RESPONSE_BODY" || grep -q "^\[" "$RESPONSE_BODY"; then
+                                                            # Looks like JSON, use python for formatting if available
+                                                            if command -v python3 &> /dev/null; then
+                                                                python3 -m json.tool < "$RESPONSE_BODY" 2>/dev/null || cat "$RESPONSE_BODY"
+                                                            elif command -v python &> /dev/null; then
+                                                                python -m json.tool < "$RESPONSE_BODY" 2>/dev/null || cat "$RESPONSE_BODY"
+                                                            else
+                                                                cat "$RESPONSE_BODY"
+                                                            fi
+                                                        else
+                                                            # Not JSON, display as-is
+                                                            cat "$RESPONSE_BODY"
+                                                        fi
+                                                    fi
+
+format the output like 
+{"name":"Janidu","age":17}
+to::
+{
+  "name": "Janidu",
+  "age": 17
+}
+
+if grep -q "^{" "$RESPONSE_BODY" || grep -q "^\[" "$RESPONSE_BODY";
+//Checks if the first character is { (object) or [ (array) → probably JSON. baskic jeson ceack
