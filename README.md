@@ -29,8 +29,15 @@ go build
 ```
 ## Build and Run if you are in Linux 
 ```sh
+# Install Bubble Tea and other dependencies
+go mod init postman-cli
+go mod tidy
+
+# Build your application
 go build -o postman-cli main.go
-./postman-cli 
+
+# Run it
+./postman-cli
 ```
 
 ## Keys
