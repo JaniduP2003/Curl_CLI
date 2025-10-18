@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -33,6 +35,7 @@ var APP_ART = `
 type screen int
 
 const (
+	introScreen screen = iota
 	urlScreen screen = iota
 	methodScreen
 	headersScreen
@@ -97,6 +100,13 @@ type model struct {
 	// Request cancellation
 	cancel   context.CancelFunc
 	canceled bool
+
+	// Intro border animation
+	introDone        bool
+	boxActive        bool
+	animOffset       int
+	animTopProgress  int // columns drawn on top/bottom
+	animSideProgress int // rows drawn on sides
 }
 
 // Initialize the application
@@ -137,13 +147,15 @@ func initialModel() model {
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 
 	return model{
-		currentScreen: urlScreen,
+	currentScreen: introScreen,
 		urlInput:      ti,
 		methodList:    methodList,
 		headersInput:  headersInput,
 		bodyInput:     bodyInput,
 		spinner:       s,
 		ready:         false,
+	// border intro defaults
+	animOffset: 0,
 	}
 }
 
@@ -151,7 +163,8 @@ func initialModel() model {
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		textinput.Blink,
-		m.spinner.Tick,
+	m.spinner.Tick,
+	tickAnim(),
 	)
 }
 
@@ -193,6 +206,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "enter":
+			if m.currentScreen == introScreen {
+				// Skip animation on Enter
+				m.introDone = true
+				m.boxActive = false // no border after animation
+				m.currentScreen = urlScreen
+				m.focusCurrentScreen()
+				return m, nil
+			}
 			return m.handleEnter()
 		}
 
@@ -210,6 +231,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Apply responsive sizing to inputs and lists
 		m.applyLayoutSizes()
 		m.methodList.SetSize(maxInt(20, msg.Width-4), maxInt(6, msg.Height-8))
+		// Reset animation progress to fit new size if intro not done
+		if m.currentScreen == introScreen && !m.introDone {
+			m.animTopProgress = minInt(m.animTopProgress, maxInt(0, m.width-(m.animOffset*2)))
+			m.animSideProgress = minInt(m.animSideProgress, maxInt(0, m.height-(m.animOffset*2)-2))
+		}
 
 	case responseMsg:
 		// Received response from bash script
@@ -239,6 +265,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.currentScreen == loadingScreen {
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
+		}
+
+	case animTickMsg:
+		// Advance intro border animation
+		if m.currentScreen == introScreen && !m.introDone {
+			// target lengths
+			innerWidth := maxInt(0, m.width-(m.animOffset*2))
+			innerHeight := maxInt(0, m.height-(m.animOffset*2))
+			// Draw top/bottom first
+			if m.animTopProgress < maxInt(0, innerWidth-2) {
+				m.animTopProgress += maxInt(1, innerWidth/20)
+			} else if m.animSideProgress < maxInt(0, innerHeight-2) {
+				m.animSideProgress += maxInt(1, innerHeight/20)
+			} else {
+				m.introDone = true
+				m.boxActive = false // remove border after animation completes
+				// Transition to URL screen automatically after a short pause
+			}
+			if m.introDone {
+				// Move on to URL screen
+				m.currentScreen = urlScreen
+				m.focusCurrentScreen()
+				return m, nil
+			}
+			return m, tickAnim()
 		}
 	}
 
@@ -406,6 +457,13 @@ func minInt(a, b int) int {
 }
 func clampInt(min, max, v int) int { return maxInt(min, minInt(max, v)) }
 
+// ===== Animation tick handling =====
+type animTickMsg struct{}
+
+func tickAnim() tea.Cmd {
+	return tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg { return animTickMsg{} })
+}
+
 // Render the UI based on current screen
 func (m model) View() string {
 	var s string
@@ -415,6 +473,12 @@ func (m model) View() string {
 		Bold(true).
 		Foreground(lipgloss.Color("62")).
 		MarginBottom(1)
+
+	if m.currentScreen == introScreen {
+		// Intro: animated border with APP_ART inside
+		s = m.renderAnimatedFrame()
+		return s
+	}
 
 	switch m.currentScreen {
 	case urlScreen:
@@ -474,7 +538,10 @@ func (m model) View() string {
 				int(m.viewport.ScrollPercent()*100)))
 		}
 	}
-
+	// Wrap everything inside persistent border frame after intro
+	if m.boxActive {
+		return m.renderFrameWithContent(s)
+	}
 	return lipgloss.NewStyle().Padding(1, 2).Render(s)
 }
 
@@ -492,6 +559,166 @@ func boxStyle(s string) string {
 		BorderForeground(lipgloss.Color("62")).
 		Padding(0, 1).
 		Render(s)
+}
+
+// ===== Frame rendering helpers =====
+
+// renderAnimatedFrame draws a progressive border animation and APP_ART inside.
+func (m model) renderAnimatedFrame() string {
+	if m.width == 0 || m.height == 0 {
+		return "Initializing..."
+	}
+	// Ensure minimums to avoid negative sizes
+	outerW := maxInt(10, m.width)
+	outerH := maxInt(6, m.height)
+	innerW := maxInt(6, outerW-2)
+	innerH := maxInt(3, outerH-2)
+
+	topCount := minInt(m.animTopProgress, innerW)
+	sideCount := minInt(m.animSideProgress, innerH)
+
+	var b strings.Builder
+	// Top
+	b.WriteString("┌")
+	b.WriteString(strings.Repeat("─", topCount))
+	if innerW-topCount > 0 {
+		b.WriteString(strings.Repeat(" ", innerW-topCount))
+	}
+	b.WriteString("┐\n")
+
+	// Middle with sides growth
+	artLines := prepareIntroArt(innerW)
+	artStartRow := maxInt(0, (innerH-len(artLines))/2)
+
+	for row := 0; row < innerH; row++ {
+		left := " "
+		right := " "
+		if row < sideCount {
+			left, right = "│", "│"
+		}
+		b.WriteString(left)
+		var line string
+		if row >= artStartRow && row < artStartRow+len(artLines) {
+			line = artLines[row-artStartRow]
+			// ensure exact width
+			line = padOrTrim(line, innerW)
+		} else {
+			line = strings.Repeat(" ", innerW)
+		}
+		b.WriteString(line)
+		b.WriteString(right)
+		b.WriteString("\n")
+	}
+
+	// Bottom
+	b.WriteString("└")
+	b.WriteString(strings.Repeat("─", topCount))
+	if innerW-topCount > 0 {
+		b.WriteString(strings.Repeat(" ", innerW-topCount))
+	}
+	b.WriteString("┘")
+
+	// Colorize border a bit using lipgloss by wrapping
+	frame := b.String()
+	// simple color: we won't recolor mixed lines; rely on terminal default
+	return frame
+}
+
+// renderFrameWithContent draws a full border and places given content inside, wrapping as needed.
+func (m model) renderFrameWithContent(content string) string {
+	if m.width == 0 || m.height == 0 {
+		return content
+	}
+	outerW := maxInt(10, m.width)
+	outerH := maxInt(6, m.height)
+	innerW := maxInt(6, outerW-2)
+	innerH := maxInt(3, outerH-2)
+
+	// Wrap content into lines of innerW
+	var lines []string
+	for _, ln := range strings.Split(content, "\n") {
+		chunks := wrapLine(ln, innerW)
+		lines = append(lines, chunks...)
+	}
+	// Fit exactly innerH lines
+	if len(lines) < innerH {
+		pad := make([]string, innerH-len(lines))
+		for i := range pad {
+			pad[i] = ""
+		}
+		lines = append(lines, pad...)
+	} else if len(lines) > innerH {
+		lines = lines[:innerH]
+	}
+
+	var b strings.Builder
+	// Top
+	b.WriteString("┌")
+	b.WriteString(strings.Repeat("─", innerW))
+	b.WriteString("┐\n")
+	// Middle
+	for _, ln := range lines {
+		b.WriteString("│")
+		b.WriteString(padOrTrim(ln, innerW))
+		b.WriteString("│\n")
+	}
+	// Bottom
+	b.WriteString("└")
+	b.WriteString(strings.Repeat("─", innerW))
+	b.WriteString("┘")
+	return b.String()
+}
+
+// prepareIntroArt centers APP_ART and a hint inside given width.
+func prepareIntroArt(innerW int) []string {
+	hint := "Press Enter to skip animation…"
+	art := strings.TrimRight(APP_ART, "\n")
+	lines := strings.Split(art, "\n")
+	// center each line and trim to width
+	for i, ln := range lines {
+		ln = strings.TrimRight(ln, " ")
+		lines[i] = centerLine(ln, innerW)
+	}
+	// add spacing and hint
+	lines = append(lines, "")
+	lines = append(lines, centerLine(hint, innerW))
+	return lines
+}
+
+func visibleLen(s string) int { return len([]rune(s)) }
+
+func padOrTrim(s string, w int) string {
+	r := []rune(s)
+	if len(r) > w {
+		return string(r[:w])
+	}
+	if len(r) < w {
+		return string(r) + strings.Repeat(" ", w-len(r))
+	}
+	return s
+}
+
+func centerLine(s string, w int) string {
+	r := []rune(s)
+	if len(r) >= w {
+		return string(r[:w])
+	}
+	pad := (w - len(r)) / 2
+	return strings.Repeat(" ", pad) + string(r) + strings.Repeat(" ", w-pad-len(r))
+}
+
+func wrapLine(s string, w int) []string {
+	if w <= 0 {
+		return []string{""}
+	}
+	r := []rune(s)
+	var out []string
+	for len(r) > w {
+		out = append(out, string(r[:w]))
+		r = r[w:]
+	}
+	out = append(out, padOrTrim(string(r), w))
+	return out
 }
 
 func main() {
