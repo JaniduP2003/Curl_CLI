@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -43,6 +44,7 @@ const (
 	confirmScreen
 	loadingScreen
 	responseScreen
+	resettingScreen
 )
 
 // HTTP methods available
@@ -81,6 +83,7 @@ type model struct {
 	// Display components
 	spinner  spinner.Model
 	viewport viewport.Model
+	progress progress.Model
 
 	// Data storage
 	url      string
@@ -107,6 +110,9 @@ type model struct {
 	animOffset       int
 	animTopProgress  int // columns drawn on top/bottom
 	animSideProgress int // rows drawn on sides
+
+	// Reset progress state
+	resetPercent float64
 }
 
 // Initialize the application
@@ -146,13 +152,20 @@ func initialModel() model {
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 
+	// Progress bar for reset transition
+	p := progress.New(
+		progress.WithDefaultGradient(),
+		progress.WithWidth(40),
+	)
+
 	return model{
-	currentScreen: introScreen,
+		currentScreen: introScreen,
 		urlInput:      ti,
 		methodList:    methodList,
 		headersInput:  headersInput,
 		bodyInput:     bodyInput,
 		spinner:       s,
+		progress:      p,
 		ready:         false,
 	// border intro defaults
 	animOffset: 0,
@@ -197,6 +210,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.canceled = true
 					m.cancel()
 				}
+				return m, nil
+			}
+			if m.currentScreen == resettingScreen {
+				// Skip resetting and jump to URL immediately
+				m.resetInputs()
+				m.currentScreen = urlScreen
+				m.focusCurrentScreen()
 				return m, nil
 			}
 			if m.currentScreen > urlScreen && m.currentScreen != loadingScreen {
@@ -267,6 +287,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+	case progress.FrameMsg:
+		// Allow progress bar to animate smoothly
+		if m.currentScreen == resettingScreen {
+			var pModel tea.Model
+			pModel, cmd = m.progress.Update(msg)
+			if pm, ok := pModel.(progress.Model); ok {
+				m.progress = pm
+			}
+			return m, cmd
+		}
+
 	case animTickMsg:
 		// Advance intro border animation
 		if m.currentScreen == introScreen && !m.introDone {
@@ -291,6 +322,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tickAnim()
 		}
+
+	case resetTickMsg:
+		// Drive resetting progress
+		if m.currentScreen == resettingScreen {
+			// increment with small steps; cap at 1.0
+			step := float64(resetTickInterval) / float64(resetTotalDuration)
+			if m.resetPercent+step > 1.0 {
+				step = 1.0 - m.resetPercent
+			}
+			if step > 0 {
+				cmds = append(cmds, m.progress.IncrPercent(step))
+				m.resetPercent += step
+			}
+			if m.resetPercent >= 1.0 {
+				// finished, go to URL screen and clear inputs
+				m.resetInputs()
+				m.currentScreen = urlScreen
+				m.focusCurrentScreen()
+				return m, nil
+			}
+			return m, tea.Batch(append(cmds, tickReset())...)
+		}
 	}
 
 	// Update the active component based on current screen
@@ -312,6 +365,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	case loadingScreen:
 		m.spinner, cmd = m.spinner.Update(msg)
+		cmds = append(cmds, cmd)
+	case resettingScreen:
+		// Progress animation updates via progress.FrameMsg
+		var pModel tea.Model
+		pModel, cmd = m.progress.Update(msg)
+		if pm, ok := pModel.(progress.Model); ok {
+			m.progress = pm
+		}
 		cmds = append(cmds, cmd)
 	}
 
@@ -371,9 +432,12 @@ func (m *model) handleEnter() (tea.Model, tea.Cmd) {
 		)
 
 	case responseScreen:
-		// Reset and start over
-		*m = initialModel()
-		return m, textinput.Blink
+	// Start a short reset progress animation, then go to URL input
+	m.currentScreen = resettingScreen
+	m.resetPercent = 0
+	// reset the visual progress to 0 immediately
+	cmd := m.progress.SetPercent(0)
+	return m, tea.Batch(cmd, tickReset())
 	}
 
 	return m, nil
@@ -388,6 +452,24 @@ func (m *model) focusCurrentScreen() {
 		m.headersInput.Focus()
 	case bodyScreen:
 		m.bodyInput.Focus()
+	}
+}
+
+// Reset inputs and view state without returning to intro
+func (m *model) resetInputs() {
+	m.url = ""
+	m.method = ""
+	m.headers = ""
+	m.body = ""
+	m.response = ""
+	m.err = nil
+	m.urlInput.SetValue("")
+	m.headersInput.SetValue("")
+	m.bodyInput.SetValue("")
+	m.methodList.Select(0)
+	if m.ready {
+		m.viewport.SetContent("")
+		m.viewport.GotoTop()
 	}
 }
 
@@ -464,6 +546,19 @@ func tickAnim() tea.Cmd {
 	return tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg { return animTickMsg{} })
 }
 
+// ===== Reset progress ticking =====
+type resetTickMsg struct{}
+
+// Configure reset progress timing
+const (
+	resetTotalDuration = 3 * time.Second
+	resetTickInterval  = 100 * time.Millisecond
+)
+
+func tickReset() tea.Cmd {
+	return tea.Tick(resetTickInterval, func(time.Time) tea.Msg { return resetTickMsg{} })
+}
+
 // Render the UI based on current screen
 func (m model) View() string {
 	var s string
@@ -537,6 +632,11 @@ func (m model) View() string {
 			s += helpStyle(fmt.Sprintf("↑/↓ to scroll • Page: %d%% • Enter for new request • Q to quit",
 				int(m.viewport.ScrollPercent()*100)))
 		}
+
+	case resettingScreen:
+		s = titleStyle.Render("🔁 Returning to start...") + "\n\n"
+		s += m.progress.View() + "\n\n"
+		s += helpStyle("Press Esc to skip")
 	}
 	// Wrap everything inside persistent border frame after intro
 	if m.boxActive {
