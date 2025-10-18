@@ -14,7 +14,82 @@ Date: Sat, 18 Oct 2025 14:09:24 GMT
 Server: Kestrel
 Transfer-Encoding: chunked
 
-{"error":"User with this email already exists."}%                                                                                                                                                                                             Curl_CLI   git:(main)  
+{"error":"User with this email already exists."}%     
+
+
+Stepbystep building THIS:::::::::::::::::::::
+        Method: POST
+
+        URL: http://localhost:8080/api/auth/register
+
+        Headers:                                                                                                                                                                                        Curl_CLI   git:(main)  
+        Content-Type: application/json
+        Authorization: Bearer ABC123
+
+        Body:
+        {"email":"test@example.com","password":"123456"}
+
+
+        CURL_ARGS=(
+    -s
+    -w '%{http_code}'
+    -o "$RESPONSE_BODY"
+    -D "$RESPONSE_HEADERS"
+    -X "$METHOD"
+)
+add the arguments HERE ++++++
+-----------------------------------------------------------------------------
+| OUTPUT ~ -s -w '%{http_code}' -o /tmp/tmp.body -D /tmp/tmp.headers -X POST |
+-----------------------------------------------------------------------------
+
+Add headers:::
+
+if [ -n "$HEADERS" ]; then
+    while IFS= read -r header; do
+        if [ -n "$header" ]; then
+            CURL_ARGS+=( -H "$header" )
+        fi
+    done <<< "$HEADERS"
+fi
+
+------------------------------------------------------------------------------------------------------------------------------------------
+| -s -w '%{http_code}' -o /tmp/tmp.body -D /tmp/tmp.headers -X POST -H "Content-Type: application/json" -H "Authorization: Bearer ABC123"|
+------------------------------------------------------------------------------------------------------------------------------------------
+
+Add body:::
+if $send_body; then
+    if $send_raw; then
+        CURL_ARGS+=( --data-raw "$BODY" )
+    else
+        CURL_ARGS+=( --data "$BODY" )
+    fi
+fi
+
+------------------------------------------------------------------------------------------------------------------------------------------
+-s -w '%{http_code}' -o /tmp/tmp.body -D /tmp/tmp.headers -X POST \
+-H "Content-Type: application/json" -H "Authorization: Bearer ABC123" \
+--data-raw '{"email":"test@example.com","password":"123456"}'
+------------------------------------------------------------------------------------------------------------------------------------------
+
+now::
+Add the URL using CURL_ARGS+=( "$URL" )
+
+what you get after this
+
+$RESPONSE_BODY
+{"message":"User created successfully","id":10}
+
+$RESPONSE_HEADERS
+HTTP/1.1 201 Created
+Content-Type: application/json
+Date: Sat, 18 Oct 2025 12:00:00 GMT
+
+now format the output::::
+
+ENDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+
+
+
 
 
    Curl_CLI   git:(main) -       echo "   janidu " | sed -E 's/^\s+//'
