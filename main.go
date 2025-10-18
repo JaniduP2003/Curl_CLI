@@ -1,10 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
-	 
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -26,6 +26,7 @@ var APP_ART = `
          
                                                    Interactive cURL Terminal UI
 `
+
 // ========== END OF ADDITION ==========
 
 // Screen states for navigation
@@ -67,27 +68,35 @@ type responseMsg struct {
 // Main model holding all state
 type model struct {
 	currentScreen screen
-	
+
 	// Input components
 	urlInput     textinput.Model
 	methodList   list.Model
 	headersInput textarea.Model
 	bodyInput    textarea.Model
-	
+
 	// Display components
-	spinner      spinner.Model
-	viewport     viewport.Model
-	
+	spinner  spinner.Model
+	viewport viewport.Model
+
 	// Data storage
-	url          string
-	method       string
-	headers      string
-	body         string
-	response     string
-	
+	url      string
+	method   string
+	headers  string
+	body     string
+	response string
+
 	// UI state
-	ready        bool
-	err          error
+	ready bool
+	err   error
+
+	// Responsive sizing
+	width  int
+	height int
+
+	// Request cancellation
+	cancel   context.CancelFunc
+	canceled bool
 }
 
 // Initialize the application
@@ -158,10 +167,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Quit on any screen except loading
 			if m.currentScreen != loadingScreen {
 				return m, tea.Quit
+			} else {
+				// allow quit during loading by canceling first
+				if m.cancel != nil {
+					m.canceled = true
+					m.cancel()
+				}
+				return m, tea.Quit
 			}
 
 		case "esc":
 			// Go back to previous screen
+			if m.currentScreen == loadingScreen {
+				// cancel in-flight request
+				if m.cancel != nil {
+					m.canceled = true
+					m.cancel()
+				}
+				return m, nil
+			}
 			if m.currentScreen > urlScreen && m.currentScreen != loadingScreen {
 				m.currentScreen--
 				m.focusCurrentScreen()
@@ -174,25 +198,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		// Handle window resize and initialize viewport
+		m.width = msg.Width
+		m.height = msg.Height
 		if !m.ready {
-			m.viewport = viewport.New(msg.Width-4, msg.Height-10)
+			m.viewport = viewport.New(maxInt(20, msg.Width-4), maxInt(5, msg.Height-10))
 			m.ready = true
 		} else {
-			m.viewport.Width = msg.Width - 4
-			m.viewport.Height = msg.Height - 10
+			m.viewport.Width = maxInt(20, msg.Width-4)
+			m.viewport.Height = maxInt(5, msg.Height-10)
 		}
-		m.methodList.SetSize(msg.Width-4, msg.Height-4)
+		// Apply responsive sizing to inputs and lists
+		m.applyLayoutSizes()
+		m.methodList.SetSize(maxInt(20, msg.Width-4), maxInt(6, msg.Height-8))
 
 	case responseMsg:
 		// Received response from bash script
 		if msg.err != nil {
 			m.err = msg.err
-			m.response = fmt.Sprintf("Error: %v", msg.err)
+			if m.canceled {
+				m.response = "Request canceled by user."
+			} else {
+				m.response = fmt.Sprintf("Error: %v", msg.err)
+			}
 		} else {
 			m.response = msg.output
 		}
 		m.currentScreen = responseScreen
-		
+		m.cancel = nil
+		m.canceled = false
+
 		// Initialize viewport with response content immediately
 		if m.ready {
 			m.viewport.SetContent(m.response)
@@ -275,9 +309,14 @@ func (m *model) handleEnter() (tea.Model, tea.Cmd) {
 	case confirmScreen:
 		// Execute the request
 		m.currentScreen = loadingScreen
+		// clear any previous cancel state
+		m.canceled = false
+		// create cancelable context for the request
+		ctx, cancel := context.WithCancel(context.Background())
+		m.cancel = cancel
 		return m, tea.Batch(
 			m.spinner.Tick,
-			m.executeRequest(),
+			m.executeRequest(ctx),
 		)
 
 	case responseScreen:
@@ -302,33 +341,70 @@ func (m *model) focusCurrentScreen() {
 }
 
 // Execute the HTTP request via bash script
-func (m *model) executeRequest() tea.Cmd {
+func (m *model) executeRequest(ctx context.Context) tea.Cmd {
 	return func() tea.Msg {
 		// Build command arguments
 		args := []string{m.method, m.url}
-		
+
 		// Add headers if provided
 		if m.headers != "" {
 			args = append(args, m.headers)
 		} else {
 			args = append(args, "")
 		}
-		
+
 		// Add body if provided
 		if m.body != "" {
 			args = append(args, m.body)
 		}
 
-		// Execute bash script
-		cmd := exec.Command("./request.sh", args...)
+		// Execute bash script with cancelable context
+		cmd := exec.CommandContext(ctx, "./request.sh", args...)
 		output, err := cmd.CombinedOutput()
-		
+
 		return responseMsg{
 			output: string(output),
 			err:    err,
 		}
 	}
 }
+
+// Apply responsive sizes to inputs and content views
+func (m *model) applyLayoutSizes() {
+	if m.width == 0 || m.height == 0 {
+		return
+	}
+	contentWidth := clampInt(30, 120, m.width-8)
+	m.urlInput.Width = contentWidth
+	m.headersInput.SetWidth(contentWidth)
+	m.bodyInput.SetWidth(contentWidth)
+
+	// Heights as a function of terminal height with sane bounds
+	headersH := clampInt(4, 12, m.height/6)
+	bodyH := clampInt(6, m.height-18, (m.height*3)/10)
+	m.headersInput.SetHeight(headersH)
+	m.bodyInput.SetHeight(bodyH)
+
+	// Viewport already updated on WindowSize; ensure min sizes
+	if m.ready {
+		m.viewport.Width = maxInt(20, m.width-4)
+		m.viewport.Height = maxInt(5, m.height-10)
+	}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+func clampInt(min, max, v int) int { return maxInt(min, minInt(max, v)) }
 
 // Render the UI based on current screen
 func (m model) View() string {
@@ -342,15 +418,17 @@ func (m model) View() string {
 
 	switch m.currentScreen {
 	case urlScreen:
-
+		// Only render large art when the terminal is wide enough
+		if m.width >= 100 {
 			artStyle := lipgloss.NewStyle().
-				Foreground(lipgloss.Color("205")). // Purple color for the art
+				Foreground(lipgloss.Color("205")).
 				Bold(true).
 				MarginBottom(1).
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("205"))
 
 			s = artStyle.Render(APP_ART) + "\n"
+		}
 		s += titleStyle.Render("🌐 Postman CLI - Enter URL") + "\n\n"
 		s += m.urlInput.View() + "\n\n"
 		s += helpStyle("Press Enter to continue • Ctrl+C to quit")
