@@ -650,7 +650,7 @@ func (m model) View() string {
 			artStyle := lipgloss.NewStyle().
 				Foreground(lipgloss.Color("205")).
 				Bold(true).
-				MarginBottom(1).
+				MarginBottom(3).
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("205"))
 
@@ -711,7 +711,7 @@ func (m model) View() string {
 		}
 
 	case resettingScreen:
-		s = titleStyle.Render("🔁 Returning to start...") + "\n\n"
+		s = titleStyle.Render(" Returning to start...") + "\n\n"
 		s += m.progress.View() + "\n\n"
 		s += helpStyle("Press Esc to skip")
 	}
