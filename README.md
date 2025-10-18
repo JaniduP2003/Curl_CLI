@@ -12,6 +12,16 @@ Interactive terminal UI for crafting HTTP requests (like Postman, but in your te
 - bash, curl
 - Optional: `jq` or Python for pretty-printing JSON responses
 
+## Install Go via Package Manager For Ubuntu/Debian
+```sh
+sudo apt update
+sudo apt install golang-go
+```
+## Install Go via Package Manager For Arch Linux
+```sh
+sudo pacman -S go
+```
+
 ## Build and Run
 ```sh
 go build
